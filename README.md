@@ -56,11 +56,16 @@ El candidato deberá diseñar y construir un flujo de CI/CD completo utilizando 
 4. **Despliegue Seguro Multiambiente**  
    Configurar variables o arc   Configurar variables o arc   Configurar variables o arc   Configurar variables o arc   Configurar variables o arc   Configurar vo a claves sensibles de forma segura (por ejemplo, usando Key Vault o Secrets Management).
 
-## Evaluac## Evaluac## Evaluac## Evaluac## Evaluac## Evaluac## Evaluac## Evaluac## Evaluac## Evaluac## Evaluac## Eval                                                         |
+## Evaluación
+
+| Rubro                                                | Descripción                                                                                         |
 |------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
 | Experiencia y dominio en las herramientas            | Uso adecuado y eficiente de las herramientas DevSecOps seleccionadas                                |
-| Implemen| Implemen| Implemen| Implemen| Implemen| Implemen| Iguración correcta de escaneos y controles de seguridad                                         |
+| Implementación de Seguridad en el Pipeline (Opcional)| Configuración correcta de escaneos y controles de seguridad                                         |
 | Proceso de compilación y despliegue                  | Proceso de construcción y despliegue sin errores y eficiente                                         |
 | Creatividad en la resolución del problema            | Soluciones adicionales o mejoras implementadas                                                      |
 | Automatización de pruebas (Opcional)                 | Inclusión de pruebas automatizadas y de seguridad en el pipeline                                     |
-| Infraestructura como código (Opcional)               | Imp| Infraestructura como código (Opcional)               | Imp| Infraestructura como código (Opcional)               | Imp| Infraestructura como código  la prueba, se agendará una sesión con el candidato para presentar y defender el trabajo realizado, explicando las decisiones técnicas tomadas durante la implementación.  
+| Infraestructura como código (Opcional)               | Implementación de IaC con controles de acceso y aprovisionamiento seguro                            |
+
+## Entrega y Defensa del Proyecto
+Una vez completada la prueba, se agendará una sesión con el candidato para presentar y defender el trabajo realizado, explicando las decisiones técnicas tomadas durante la implementación.  
