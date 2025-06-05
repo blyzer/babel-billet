@@ -1,0 +1,19 @@
+{
+    "name": "babel",
+    "version": "1.0.0",
+    "description": "Proyecto ejemplo para CI/CD DevSecOps",
+    "main": "src/index.js",
+    "scripts": {
+        "start": "node src/index.js",
+        "test": "jest --coverage",
+        "build": "babel src --out-dir dist"
+    },
+    "author": "Enver Francisco",
+    "license": "MIT",
+    "devDependencies": {
+      "@babel/cli": "^7.x",
+      "@babel/core": "^7.x",
+      "@babel/preset-env": "^7.x",
+      "jest": "^29.x"
+    }
+}

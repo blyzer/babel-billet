@@ -1,0 +1,191 @@
+name: CI/CD Pipeline Seguro
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+      - release/*
+  pull_request:
+    branches:
+      - develop
+      - main
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  # 1. Build
+  docker:
+    name: Build & Push Docker
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies & run tests
+        run: |
+          npm install
+          npm test
+
+      - name: Build and push Docker image
+        run: |
+          docker build \
+            --file Dockerfile \
+            --tag babel-app:${{ github.sha }} .
+
+          # Push only if on main
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+            docker tag babel-app:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/babel-app:latest
+            docker push ${{ secrets.DOCKERHUB_USERNAME }}/babel-app:latest
+          fi
+
+# 2. Security Scan
+  security-scan:
+    name: Escaneo de Vulnerabilidades
+    runs-on: ubuntu-latest
+    needs: docker
+    steps:
+      - uses: actions/checkout@v2
+        with:
+            # Disabling shallow clones is recommended for improving the relevancy of reporting
+            fetch-depth: 0
+
+      - name: Scan Docker image with Trivy
+        run: |
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/babel-app:latest
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image ${{ secrets.DOCKERHUB_USERNAME }}/babel-app:latest
+
+      - name: npm audit
+        run: npm audit --audit-level=moderate
+
+      - name: Upload Test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: Depcheck report
+          path: ${{ github.workspace }}/reports
+
+      - name: install and run git-secrets
+        run: |
+             sudo apt-get update
+             sudo apt-get install git-secrets
+             git-secrets --register-aws
+             git-secrets --scan .
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5.2.0 # Use the latest version as needed
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  depchecktest:
+    runs-on: ubuntu-latest
+    name: depecheck_test
+    needs: docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Depcheck
+        uses: dependency-check/Dependency-Check_Action@main
+        id: Depcheck
+        with:
+          project: 'test'
+          path: '.'
+          format: 'HTML'
+          out: 'reports' # this is the default, no need to specify unless you wish to override it
+          args: >
+            --failOnCVSS 7
+            --enableRetired
+      - name: Upload Test results
+        uses: actions/upload-artifact@v4
+        with:
+           name: Depcheck report
+           path: ${{github.workspace}}/reports
+
+  # 3. Test
+  test:
+    name: Ejecutar Pruebas
+    runs-on: ubuntu-latest
+    needs: docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Tests
+        run: npm test
+
+      - name: Prepare test results folder
+        run: mkdir -p test-results
+        
+      - name: Upload Test Results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+
+  # 4. Deploy a DEV (branch develop)
+  deploy-dev:
+    name: Deploy a Desarrollo
+    runs-on: ubuntu-latest
+    env:
+      DB_HOST: ${{ github.ref == 'refs/heads/develop' && secrets.DEV_DB_HOST || secrets.STAGING_DB_HOST }}
+      DB_USER: ${{ github.ref == 'refs/heads/develop' && secrets.DEV_DB_USER || secrets.STAGING_DB_USER }}
+      DB_PASSWORD: ${{ github.ref == 'refs/heads/develop' && secrets.DEV_DB_PASSWORD || secrets.STAGING_DB_PASSWORD }}
+      SECRET_KEY: ${{ github.ref == 'refs/heads/develop' && secrets.DEV_SECRET_KEY || secrets.STAGING_SECRET_KEY }}
+
+    needs: [docker, test]
+    if: github.ref == 'refs/heads/develop'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Dev Server
+        run: |
+          echo "deploy cloud"
+
+  # 5. Deploy a STAGING (branch main)
+  deploy-staging:
+    name: Deploy a Staging
+    runs-on: ubuntu-latest
+    env:
+      DB_HOST: ${{ github.ref == 'refs/heads/main' && secrets.STAGING_DB_HOST || secrets.DEV_DB_HOST }}
+      DB_USER: ${{ github.ref == 'refs/heads/main' && secrets.STAGING_DB_USER || secrets.DEV_DB_USER }}
+      DB_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.STAGING_DB_PASSWORD || secrets.DEV_DB_PASSWORD }}
+      SECRET_KEY: ${{ github.ref == 'refs/heads/main' && secrets.STAGING_SECRET_KEY || secrets.DEV_SECRET_KEY }}
+
+    needs: [docker, test]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Staging Server
+        run: |
+          echo "staging"
+
+  # 6. Deploy a production (branch release)
+  deploy-production:
+    name: Deploy a Production
+    runs-on: ubuntu-latest
+    env:
+      DB_HOST: ${{ startsWith(github.ref, 'refs/heads/release/') && secrets.PRODUCTION_DB_HOST || secrets.STAGING_DB_HOST }}
+      DB_USER: ${{ startsWith(github.ref, 'refs/heads/release/') && secrets.PRODUCTION_DB_USER || secrets.STAGING_DB_USER }}
+      DB_PASSWORD: ${{ startsWith(github.ref, 'refs/heads/release/') && secrets.PRODUCTION_DB_PASSWORD || secrets.STAGING_DB_PASSWORD }}
+      SECRET_KEY: ${{ startsWith(github.ref, 'refs/heads/release/') && secrets.PRODUCTION_SECRET_KEY || secrets.STAGING_SECRET_KEY }}
+    needs: [docker, test]
+    if: startsWith(github.ref, 'refs/heads/release/')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Production Server
+        run: echo "Production branch"
