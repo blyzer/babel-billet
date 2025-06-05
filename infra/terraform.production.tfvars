@@ -1,0 +1,9 @@
+aws_region        = "us-east-1"
+project_name      = "babel-billed"
+instance_type     = "t3.medium" # Optional: Larger instance for production
+environment       = "production"
+docker_image      = "blyzer/babel-app"
+db_password       = "SecurePassword123*" # Stronger password for production
+allowed_ssh_ip    = "<your_ip>/32"
+aws_account_id    = "621096086784"
+github_repository = "blyzer/babel-billet"
