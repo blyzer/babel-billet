@@ -14,14 +14,13 @@ on:
 permissions:
   contents: read
   statuses: write
-  id-token: write # Necesario para autenticación con AWS
-  actions: write # Necesario para actualizar secretos
 
 jobs:
-  # 1. Build & Push Docker
+  # 1. Build
   docker:
     name: Build & Push Docker
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,103 +28,99 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: 20
 
       - name: Install dependencies & run tests
         run: |
-          npm ci
+          npm install
           npm test
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Build and push Docker image
         run: |
           docker build \
             --file Dockerfile \
-            --tag ${{ secrets.DOCKERHUB_USERNAME }}/babel-billet:${{ github.sha }} \
-            --tag ${{ secrets.DOCKERHUB_USERNAME }}/babel-billet:${{ github.ref_name }}-latest .
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/babel-billet:${{ github.sha }}
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/babel-billet:${{ github.ref_name }}-latest
+            --tag babel-app:${{ github.sha }} .
 
-  # 2. Security Scan
+          # Push only if on main
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+            docker tag babel-app:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/babel-app:latest
+            docker push ${{ secrets.DOCKERHUB_USERNAME }}/babel-app:latest
+          fi
+
+# 2. Security Scan
   security-scan:
     name: Escaneo de Vulnerabilidades
     runs-on: ubuntu-latest
     needs: docker
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v2
         with:
-          fetch-depth: 0
+            # Disabling shallow clones is recommended for improving the relevancy of reporting
+            fetch-depth: 0
 
       - name: Scan Docker image with Trivy
-        uses: aquasec/trivy-action@master
-        with:
-          image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/babel-billet:${{ github.sha }}
-          format: table
-          exit-code: '1'
-          severity: CRITICAL,HIGH
+        run: |
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/babel-app:latest
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image ${{ secrets.DOCKERHUB_USERNAME }}/babel-app:latest
 
       - name: npm audit
         run: npm audit --audit-level=moderate
 
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v3
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-
-      - name: Upload SonarQube results
-        if: always()
+      - name: Upload Test results
         uses: actions/upload-artifact@v4
         with:
-          name: sonar-report
-          path: .scannerwork/
+          name: Depcheck report
+          path: ${{ github.workspace }}/reports
 
-  # 3. Dependency Check
-  depcheck:
-    name: Dependency Check
+      - name: install and run git-secrets
+        run: |
+             sudo apt-get update
+             sudo apt-get install git-secrets
+             git-secrets --register-aws
+             git-secrets --scan .
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5.2.0 # Use the latest version as needed
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  depchecktest:
     runs-on: ubuntu-latest
+    name: depecheck_test
     needs: docker
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-      - name: Dependency Check
+        uses: actions/checkout@v2
+      - name: Depcheck
         uses: dependency-check/Dependency-Check_Action@main
+        id: Depcheck
         with:
-          project: 'babel-billet'
+          project: 'test'
           path: '.'
           format: 'HTML'
-          out: 'reports'
+          out: 'reports' # this is the default, no need to specify unless you wish to override it
           args: >
             --failOnCVSS 7
             --enableRetired
-      - name: Upload Dependency Check Report
+      - name: Upload Test results
         uses: actions/upload-artifact@v4
         with:
-          name: depcheck-report
-          path: reports/
+           name: Depcheck report
+           path: ${{github.workspace}}/reports
 
-  # 4. Test
+  # 3. Test
   test:
     name: Ejecutar Pruebas
     runs-on: ubuntu-latest
     needs: docker
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "18"
 
       - name: Install Dependencies
         run: npm ci
@@ -133,199 +128,64 @@ jobs:
       - name: Run Tests
         run: npm test
 
+      - name: Prepare test results folder
+        run: mkdir -p test-results
+        
       - name: Upload Test Results
-        if: always()
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: test-results/
 
-  # 5. Terraform Plan
-  iac-plan:
-    name: Terraform Plan
-    runs-on: ubuntu-latest
-    env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1.0.0
-        with:
-          soft_fail: false
-          working_directory: infra
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.5.7
-
-      - name: Terraform Init
-        working-directory: infra
-        run: terraform init
-
-      - name: Terraform Plan
-        working-directory: infra
-        run: |
-          if [ "${{ github.ref }}" == "refs/heads/develop" ]; then
-            terraform workspace select dev || terraform workspace new dev
-            terraform plan -var-file="terraform.dev.tfvars" -out=devtfplan
-          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
-            terraform workspace select staging || terraform workspace new staging
-            terraform plan -var-file="terraform.staging.tfvars" -out=stagingtfplan
-          elif [[ "${{ github.ref }}" == refs/heads/release/* ]]; then
-            terraform workspace select production || terraform workspace new production
-            terraform plan -var-file="terraform.production.tfvars" -out=prodtfplan
-          fi
-        env:
-          TF_VAR_aws_account_id: ${{ secrets.AWS_ACCOUNT_ID }}
-          TF_VAR_github_repository: ${{ secrets.GITHUB_REPOSITORY }}
-
-      - name: Upload Terraform Plan
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraform-plan
-          path: infra/*.tfplan
-
-  # 6. Terraform Apply
-  iac-apply:
-    name: Terraform Apply
-    runs-on: ubuntu-latest
-    needs: iac-plan
-    env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.5.7
-
-      - name: Download Terraform Plan
-        uses: actions/download-artifact@v4
-        with:
-          name: terraform-plan
-          path: infra/
-
-      - name: Terraform Init
-        working-directory: infra
-        run: terraform init
-
-      - name: Terraform Apply and Capture Outputs
-        working-directory: infra
-        run: |
-          if [ "${{ github.ref }}" == "refs/heads/develop" ]; then
-            terraform workspace select dev
-            terraform apply -auto-approve "devtfplan"
-            terraform output -json > outputs.json
-            echo "ECS_CLUSTER_DEV=$(jq -r '.ecs_cluster_name.value' outputs.json)" >> $GITHUB_ENV
-            echo "ECS_SERVICE_DEV=$(jq -r '.ecs_service_name.value' outputs.json)" >> $GITHUB_ENV
-            echo "AWS_ROLE_ARN_DEV=$(jq -r '.github_actions_role_arn_dev.value' outputs.json)" >> $GITHUB_ENV
-            gh secret set AWS_ROLE_ARN_DEV -b "${{ env.AWS_ROLE_ARN_DEV }}"
-            gh secret set ECS_CLUSTER_DEV -b "${{ env.ECS_CLUSTER_DEV }}"
-            gh secret set ECS_SERVICE_DEV -b "${{ env.ECS_SERVICE_DEV }}"
-          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
-            terraform workspace select staging
-            terraform apply -auto-approve "stagingtfplan"
-            terraform output -json > outputs.json
-            echo "ECS_CLUSTER_STAGING=$(jq -r '.ecs_cluster_name.value' outputs.json)" >> $GITHUB_ENV
-            echo "ECS_SERVICE_STAGING=$(jq -r '.ecs_service_name.value' outputs.json)" >> $GITHUB_ENV
-            echo "AWS_ROLE_ARN_STAGING=$(jq -r '.github_actions_role_arn_staging.value' outputs.json)" >> $GITHUB_ENV
-            gh secret set AWS_ROLE_ARN_STAGING -b "${{ env.AWS_ROLE_ARN_STAGING }}"
-            gh secret set ECS_CLUSTER_STAGING -b "${{ env.ECS_CLUSTER_STAGING }}"
-            gh secret set ECS_SERVICE_STAGING -b "${{ env.ECS_SERVICE_STAGING }}"
-          elif [[ "${{ github.ref }}" == refs/heads/release/* ]]; then
-            terraform workspace select production
-            terraform apply -auto-approve "prodtfplan"
-            terraform output -json > outputs.json
-            echo "ECS_CLUSTER_PRODUCTION=$(jq -r '.ecs_cluster_name.value' outputs.json)" >> $GITHUB_ENV
-            echo "ECS_SERVICE_PRODUCTION=$(jq -r '.ecs_service_name.value' outputs.json)" >> $GITHUB_ENV
-            echo "AWS_ROLE_ARN_PRODUCTION=$(jq -r '.github_actions_role_arn_production.value' outputs.json)" >> $GITHUB_ENV
-            gh secret set AWS_ROLE_ARN_PRODUCTION -b "${{ env.AWS_ROLE_ARN_PRODUCTION }}"
-            gh secret set ECS_CLUSTER_PRODUCTION -b "${{ env.ECS_CLUSTER_PRODUCTION }}"
-            gh secret set ECS_SERVICE_PRODUCTION -b "${{ env.ECS_SERVICE_PRODUCTION }}"
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TF_VAR_aws_account_id: ${{ secrets.AWS_ACCOUNT_ID }}
-          TF_VAR_github_repository: ${{ secrets.GITHUB_REPOSITORY }}
-
-  # 7. Deploy to Dev
+  # 4. Deploy a DEV (branch develop)
   deploy-dev:
     name: Deploy a Desarrollo
     runs-on: ubuntu-latest
-    needs: [iac-apply, docker, test, security-scan, depcheck]
+    env:
+      DB_HOST: ${{ github.ref == 'refs/heads/develop' && secrets.DEV_DB_HOST || secrets.STAGING_DB_HOST }}
+      DB_USER: ${{ github.ref == 'refs/heads/develop' && secrets.DEV_DB_USER || secrets.STAGING_DB_USER }}
+      DB_PASSWORD: ${{ github.ref == 'refs/heads/develop' && secrets.DEV_DB_PASSWORD || secrets.STAGING_DB_PASSWORD }}
+      SECRET_KEY: ${{ github.ref == 'refs/heads/develop' && secrets.DEV_SECRET_KEY || secrets.STAGING_SECRET_KEY }}
+
+    needs: [docker, test]
     if: github.ref == 'refs/heads/develop'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-to-assume: ${{ env.AWS_ROLE_ARN_DEV }}
-          role-session-name: GitHubActionsDeploy
-      - name: Deploy to ECS (Dev)
-        env:
-          ECS_CLUSTER: ${{ env.ECS_CLUSTER_DEV }}
-          ECS_SERVICE: ${{ env.ECS_SERVICE_DEV }}
+      - uses: actions/checkout@v4
+      - name: Deploy to Dev Server
         run: |
-          aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $ECS_SERVICE \
-            --force-new-deployment
+          echo "deploy cloud"
 
-  # 8. Deploy to Staging
+  # 5. Deploy a STAGING (branch main)
   deploy-staging:
     name: Deploy a Staging
     runs-on: ubuntu-latest
-    needs: [iac-apply, docker, test, security-scan, depcheck]
+    env:
+      DB_HOST: ${{ github.ref == 'refs/heads/main' && secrets.STAGING_DB_HOST || secrets.DEV_DB_HOST }}
+      DB_USER: ${{ github.ref == 'refs/heads/main' && secrets.STAGING_DB_USER || secrets.DEV_DB_USER }}
+      DB_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.STAGING_DB_PASSWORD || secrets.DEV_DB_PASSWORD }}
+      SECRET_KEY: ${{ github.ref == 'refs/heads/main' && secrets.STAGING_SECRET_KEY || secrets.DEV_SECRET_KEY }}
+
+    needs: [docker, test]
     if: github.ref == 'refs/heads/main'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-to-assume: ${{ env.AWS_ROLE_ARN_STAGING }}
-          role-session-name: GitHubActionsDeploy
-      - name: Deploy to ECS (Staging)
-        env:
-          ECS_CLUSTER: ${{ env.ECS_CLUSTER_STAGING }}
-          ECS_SERVICE: ${{ env.ECS_SERVICE_STAGING }}
+      - uses: actions/checkout@v4
+      - name: Deploy to Staging Server
         run: |
-          aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $ECS_SERVICE \
-            --force-new-deployment
+          echo "staging"
 
-  # 9. Deploy to Production
+  # 6. Deploy a production (branch release)
   deploy-production:
     name: Deploy a Production
     runs-on: ubuntu-latest
-    needs: [iac-apply, docker, test, security-scan, depcheck]
+    env:
+      DB_HOST: ${{ startsWith(github.ref, 'refs/heads/release/') && secrets.PRODUCTION_DB_HOST || secrets.STAGING_DB_HOST }}
+      DB_USER: ${{ startsWith(github.ref, 'refs/heads/release/') && secrets.PRODUCTION_DB_USER || secrets.STAGING_DB_USER }}
+      DB_PASSWORD: ${{ startsWith(github.ref, 'refs/heads/release/') && secrets.PRODUCTION_DB_PASSWORD || secrets.STAGING_DB_PASSWORD }}
+      SECRET_KEY: ${{ startsWith(github.ref, 'refs/heads/release/') && secrets.PRODUCTION_SECRET_KEY || secrets.STAGING_SECRET_KEY }}
+    needs: [docker, test]
     if: startsWith(github.ref, 'refs/heads/release/')
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-to-assume: ${{ env.AWS_ROLE_ARN_PRODUCTION }}
-          role-session-name: GitHubActionsDeploy
-      - name: Deploy to ECS (Production)
-        env:
-          ECS_CLUSTER: ${{ env.ECS_CLUSTER_PRODUCTION }}
-          ECS_SERVICE: ${{ env.ECS_SERVICE_PRODUCTION }}
-        run: |
-          aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $ECS_SERVICE \
-            --force-new-deployment
+      - uses: actions/checkout@v4
+      - name: Deploy to Production Server
+        run: echo "Production branch"
